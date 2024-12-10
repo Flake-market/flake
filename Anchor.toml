@@ -11,8 +11,8 @@ flake = "8zYMYyqVyLtY8HZQjcCcvfAHzstZRRbkRyvLc9fmvYHG"
 url = "https://api.devnet.solana.com"
 
 [provider]
-cluster = "devnet"
-wallet = "./id.json"
-
+cluster = "localnet"
+#wallet = "./id.json"
+wallet = "~/.config/solana/id.json"
 [scripts]
 test = "yarn run ts-mocha -p ./tsconfig.json -t 1000000 tests/**/*.ts"
