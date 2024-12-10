@@ -1,4 +1,6 @@
 use anchor_lang::prelude::*;
+use anchor_spl::token::{Token, Mint, TokenAccount};
+use anchor_spl::associated_token::AssociatedToken;
 
 declare_id!("HAnx7CUgV4WcCUjLe4616Zm3fgobLEBnH6XUVtr8JNSk");
 
@@ -6,133 +8,188 @@ declare_id!("HAnx7CUgV4WcCUjLe4616Zm3fgobLEBnH6XUVtr8JNSk");
 pub mod flake {
     use super::*;
 
-    pub fn initialize(ctx: Context<Initialize>) -> Result<()> {
+    pub fn initialize_factory(
+        ctx: Context<InitializeFactory>,
+        protocol_fee: u64,
+    ) -> Result<()> {
+        require!(protocol_fee <= 10000, FactoryError::InvalidProtocolFee);
+        
         let factory = &mut ctx.accounts.factory;
-        factory.owner = ctx.accounts.owner.key();
-        factory.pair_count = 0;
+        factory.authority = ctx.accounts.authority.key();
+        factory.fee_recipient = ctx.accounts.fee_recipient.key();
+        factory.protocol_fee = protocol_fee;
+        factory.pairs_count = 0;
+
         Ok(())
     }
 
     pub fn create_pair(
         ctx: Context<CreatePair>,
-        token_a: Pubkey,
-        token_b: Pubkey,
-        bump: u8,
+        params: CreatePairParams,
     ) -> Result<()> {
-        let factory = &mut ctx.accounts.factory;
-        let pair = &mut ctx.accounts.pair;
-        
-        // Initialize pair data
-        pair.token_a = token_a;
-        pair.token_b = token_b;
-        pair.authority = factory.key();
-        pair.bump = bump;
-        // Initialize reserves
-        pair.reserve_a = 0;
-        pair.reserve_b = 0;
+        require!(params.base_price > 0, FactoryError::InvalidBasePrice);
+        require!(
+            params.name.len() <= 32 && 
+            params.ticker.len() <= 10 && 
+            params.description.len() <= 200,
+            FactoryError::InvalidStringLength
+        );
 
-        factory.pair_count += 1;
+        let pair = &mut ctx.accounts.pair;
+        let factory = &mut ctx.accounts.factory;
+
+        pair.bump = ctx.bumps.pair;
+        pair.creator = ctx.accounts.creator.key();
+        pair.attention_token_mint = ctx.accounts.attention_token_mint.key();
+        pair.creator_token_account = ctx.accounts.creator_token_account.key();
+        pair.quote_token = params.quote_token;
+        pair.base_price = params.base_price;
+        pair.protocol_fee = factory.protocol_fee;
+        
+        pair.name = params.name;
+        pair.ticker = params.ticker;
+        pair.description = params.description;
+        pair.token_image = params.token_image;
+        pair.twitter = params.twitter;
+        pair.telegram = params.telegram;
+        pair.website = params.website;
+
+        factory.pairs_count = factory.pairs_count.checked_add(1).unwrap();
 
         Ok(())
     }
 
-    pub fn swap(
-        ctx: Context<Swap>,
-        amount_in: u64,
-        min_amount_out: u64,
-    ) -> Result<()> {
-        let pair = &mut ctx.accounts.pair;
+    pub fn initialize_token(ctx: Context<InitializeToken>) -> Result<()> {
+        let cpi_context = CpiContext::new(
+            ctx.accounts.token_program.to_account_info(),
+            anchor_spl::token::InitializeMint {
+                mint: ctx.accounts.mint.to_account_info(),
+                rent: ctx.accounts.rent.to_account_info(),
+            },
+        );
         
-        // Dummy swap calculation (this would normally use proper bonding curve logic)
-        // For poc purposes, I used a simple 1:1 ratio
-        require!(amount_in > 0, CustomError::InvalidAmount);
-        require!(pair.reserve_a > 0 && pair.reserve_b > 0, CustomError::InsufficientLiquidity);
-        
-        // Check if swapping token_a for token_b or vice versa
-        if ctx.accounts.token_in.key() == pair.token_a {
-            let amount_out = amount_in;  
-            require!(amount_out >= min_amount_out, CustomError::SlippageExceeded);
-            require!(amount_out <= pair.reserve_b, CustomError::InsufficientLiquidity);
-            
-            pair.reserve_a = pair.reserve_a.checked_add(amount_in).unwrap();
-            pair.reserve_b = pair.reserve_b.checked_sub(amount_out).unwrap();
-        } else {
-            let amount_out = amount_in;  
-            require!(amount_out >= min_amount_out, CustomError::SlippageExceeded);
-            require!(amount_out <= pair.reserve_a, CustomError::InsufficientLiquidity);
-            
-            pair.reserve_b = pair.reserve_b.checked_add(amount_in).unwrap();
-            pair.reserve_a = pair.reserve_a.checked_sub(amount_out).unwrap();
-        }
-
+        anchor_spl::token::initialize_mint(
+            cpi_context,
+            9,  // decimals
+            &ctx.accounts.pair.key(),  // mint authority
+            Some(&ctx.accounts.pair.key()), // freeze authority
+        )?;
+    
         Ok(())
     }
 }
 
+#[account]
+#[derive(Default)]
+pub struct Factory {
+    pub authority: Pubkey,
+    pub fee_recipient: Pubkey,
+    pub protocol_fee: u64,
+    pub pairs_count: u64,
+}
+
+// Add this struct to the account validation structures
 #[derive(Accounts)]
-pub struct Initialize<'info> {
+pub struct InitializeToken<'info> {
+    #[account(mut)]
+    pub pair: Account<'info, Pair>,
+    /// CHECK: Initialized in CPI
+    #[account(mut)]
+    pub mint: UncheckedAccount<'info>,
+    pub token_program: Program<'info, Token>,
+    pub rent: Sysvar<'info, Rent>,
+}
+
+#[account]
+#[derive(Default)]
+pub struct Pair {
+    pub bump: u8,
+    pub creator: Pubkey,
+    pub attention_token_mint: Pubkey,
+    pub creator_token_account: Pubkey,
+    pub quote_token: Pubkey,
+    pub base_price: u64,
+    pub protocol_fee: u64,
+    
+    pub name: String,
+    pub ticker: String,
+    pub description: String,
+    pub token_image: String,
+    pub twitter: String,
+    pub telegram: String,
+    pub website: String,
+}
+
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
+pub struct CreatePairParams {
+    pub name: String,
+    pub ticker: String,
+    pub description: String,
+    pub token_image: String,
+    pub twitter: String,
+    pub telegram: String,
+    pub website: String,
+    pub quote_token: Pubkey,
+    pub base_price: u64,
+}
+
+#[derive(Accounts)]
+pub struct InitializeFactory<'info> {
     #[account(
         init,
-        payer = owner,
-        space = 8 + 32 + 8 // discriminator + owner pubkey + pair count
+        payer = authority,
+        space = 8 + 32 + 32 + 8 + 8
     )]
     pub factory: Account<'info, Factory>,
+    
+    /// CHECK: Only storing pubkey
+    pub fee_recipient: UncheckedAccount<'info>,
+    
     #[account(mut)]
-    pub owner: Signer<'info>,
+    pub authority: Signer<'info>,
     pub system_program: Program<'info, System>,
 }
 
 #[derive(Accounts)]
-#[instruction(token_a: Pubkey, token_b: Pubkey, bump: u8)]
+#[instruction(params: CreatePairParams)]
 pub struct CreatePair<'info> {
     #[account(mut)]
     pub factory: Account<'info, Factory>,
+    
     #[account(
         init,
-        payer = payer,
-        space = 8 + 32 + 32 + 32 + 1 + 8 + 8, // discriminator + token_a + token_b + authority + bump + reserve_a + reserve_b
-        seeds = [b"pair".as_ref(), token_a.as_ref(), token_b.as_ref()],
-        bump
+        payer = creator,
+        seeds = [b"pair", creator.key().as_ref(), factory.pairs_count.to_le_bytes().as_ref()],
+        bump,
+        space = 8 + 1 + 32 + 32 + 32 + 32 + 8 + 8 + 
+                (4 + 32) + (4 + 10) + (4 + 200) + 
+                (4 + 100) + (4 + 50) + (4 + 50) + (4 + 100)
     )]
     pub pair: Account<'info, Pair>,
+    
+    /// CHECK: Created by token program
     #[account(mut)]
-    pub payer: Signer<'info>,
+    pub attention_token_mint: UncheckedAccount<'info>,
+    
+    /// CHECK: Created by token program
+    #[account(mut)]
+    pub creator_token_account: UncheckedAccount<'info>,
+    
+    #[account(mut)]
+    pub creator: Signer<'info>,
+    
+    pub token_program: Program<'info, Token>,
+    pub associated_token_program: Program<'info, AssociatedToken>,
     pub system_program: Program<'info, System>,
-}
-
-#[derive(Accounts)]
-pub struct Swap<'info> {
-    #[account(mut)]
-    pub pair: Account<'info, Pair>,
-    /// CHECK: Verified in the swap logic
-    pub token_in: AccountInfo<'info>,
-    /// CHECK: Verified in the swap logic
-    pub token_out: AccountInfo<'info>,
-    pub user: Signer<'info>,
-}
-
-#[account]
-pub struct Factory {
-    pub owner: Pubkey,
-    pub pair_count: u64,
-}
-
-#[account]
-pub struct Pair {
-    pub token_a: Pubkey,
-    pub token_b: Pubkey,
-    pub authority: Pubkey,
-    pub bump: u8,
-    pub reserve_a: u64,
-    pub reserve_b: u64,
+    pub rent: Sysvar<'info, Rent>,
 }
 
 #[error_code]
-pub enum CustomError {
-    #[msg("Invalid amount")]
-    InvalidAmount,
-    #[msg("Insufficient liquidity")]
-    InsufficientLiquidity,
-    #[msg("Slippage tolerance exceeded")]
-    SlippageExceeded,
+pub enum FactoryError {
+    #[msg("Protocol fee must be between 0 and 10000 (100%)")]
+    InvalidProtocolFee,
+    #[msg("Base price must be greater than 0")]
+    InvalidBasePrice,
+    #[msg("String length exceeds maximum allowed")]
+    InvalidStringLength,
 }
