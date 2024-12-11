@@ -218,7 +218,7 @@ pub struct CreatePair<'info> {
         payer = creator,
         seeds = [b"pair", creator.key().as_ref(), factory.pairs_count.to_le_bytes().as_ref()],
         bump,
-        space = 3500
+        space = 3100
     )]
     pub pair: Account<'info, Pair>,
     
