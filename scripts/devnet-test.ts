@@ -20,7 +20,7 @@ import {
   const RPC_URL = "http://127.0.0.1:8899"; // local validator URL
   
   // REPLACE 
-  const FACTORY_PUBKEY = new PublicKey("4Qr1V3pQkK23DzL36b5cLnLEHqSj1gAVgBCJQFFHhJQa");
+  let FACTORY_PUBKEY= new PublicKey("4Qr1V3pQkK23DzL36b5cLnLEHqSj1gAVgBCJQFFHhJQa");
   
   async function loadWallet(): Promise<Wallet> {
     const keyPath = path.join(__dirname, '..' ,'id.json');
@@ -40,6 +40,25 @@ import {
     const idlPath = path.join(__dirname, '..', 'target', 'idl', 'flake.json');
     const idl = JSON.parse(fs.readFileSync(idlPath, 'utf-8'));
     return new Program<Flake>(idl as Flake, provider);
+  }
+
+  async function createFactory(program: Program<Flake>, feeRecipient: PublicKey): Promise<PublicKey> {
+    const factory = Keypair.generate();
+    
+    console.log("Creating factory...");
+    await program.methods
+      .initializeFactory(new BN(0))
+      .accounts({
+        factory: factory.publicKey,
+        feeRecipient: feeRecipient,
+        authority: program.provider.publicKey,
+      })
+      .signers([factory])
+      .rpc();
+      
+    console.log("Factory created:", factory.publicKey.toString());
+    
+    return factory.publicKey;
   }
   
   async function createPair(program: Program<Flake>, factoryPubkey: PublicKey, params: {
@@ -129,6 +148,10 @@ import {
       price: r.price.toString(),
       description: r.description
     })));
+    const factory = await program.account.factory.fetch(FACTORY_PUBKEY);
+    const pairCount = factory.pairsCount;
+  
+    console.log("Pair count", pairCount.toString());
     console.log("--------------------\n");
   }
   
@@ -145,7 +168,6 @@ import {
       await connection.confirmTransaction(airdropSig);
     }
   
-    console.log("Reusing factory:", FACTORY_PUBKEY.toString());
   
     // Create a new pair using the existing factory
     const params = {
@@ -161,7 +183,13 @@ import {
         { price: 5_000_000_000, description: "Special promo tweet" }
       ],
     };
-  
+
+    if(!FACTORY_PUBKEY) {
+        console.log("No factory found, creating new factory...");
+        FACTORY_PUBKEY = await createFactory(program, program.provider.publicKey);
+    } else {
+        console.log("Factory found, reusing it to create the pair...");
+    }
     const { pairAddress, mint } = await createPair(program, FACTORY_PUBKEY, params);
   
     // Fetch and print details of the newly created pair
