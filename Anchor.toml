@@ -5,15 +5,15 @@ resolution = true
 skip-lint = false
 
 [programs.localnet]
-flake = "8zYMYyqVyLtY8HZQjcCcvfAHzstZRRbkRyvLc9fmvYHG"
+flake = "5cYJsEQDUHGQuZ3SuSRjAN14g23iXtWboqoFJ6fJHtYM"
 
 [registry]
-url = "https://api.localnet.solana.com"
+url = "https://api.devnet.solana.com"
 
 [provider]
-cluster = "localnet"
-#wallet = "./id.json"
-wallet = "~/.config/solana/id.json"
+cluster = "devnet"
+wallet = "./id2.json"
+#wallet = "~/.config/solana/id.json"
 [scripts]
 test = "yarn run ts-mocha -p ./tsconfig.json -t 1000000 tests/**/*.ts"
 

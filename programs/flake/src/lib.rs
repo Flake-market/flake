@@ -4,7 +4,7 @@ use anchor_spl::associated_token::AssociatedToken;
 use solana_program::system_instruction;
 use solana_program::program::invoke;
 
-declare_id!("8zYMYyqVyLtY8HZQjcCcvfAHzstZRRbkRyvLc9fmvYHG");
+declare_id!("5cYJsEQDUHGQuZ3SuSRjAN14g23iXtWboqoFJ6fJHtYM");
 
 #[program]
 pub mod flake {
@@ -83,6 +83,13 @@ pub mod flake {
             &pair.key(),
             Some(&pair.key()),
         )?;
+
+        emit!(PairCreated {
+            pair_id: factory.pairs_count,
+            pair_key: pair.key(),
+            creator: ctx.accounts.creator.key(),
+            base_price: pair.base_price,
+        });
 
         Ok(())
     }
@@ -348,6 +355,14 @@ pub enum FactoryError {
     InvalidRequestPrice,
     #[msg("Slippage tolerance exceeded")]
     SlippageExceeded,
+}
+
+#[event] 
+pub struct PairCreated {
+    pub pair_id: u64,
+    pub pair_key: Pubkey,
+    pub creator: Pubkey,
+    pub base_price: u64,
 }
 
 fn calculate_output_amount(amount_in: u64, base_price: u64) -> Result<u64> {

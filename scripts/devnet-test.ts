@@ -16,14 +16,14 @@ import {
   import path from 'path';
   import { Flake } from '../target/types/flake';
   
-  const PROGRAM_ID = new PublicKey("8zYMYyqVyLtY8HZQjcCcvfAHzstZRRbkRyvLc9fmvYHG");
-  const RPC_URL = "http://127.0.0.1:8899"; // local validator URL
+  const PROGRAM_ID = new PublicKey("5cYJsEQDUHGQuZ3SuSRjAN14g23iXtWboqoFJ6fJHtYM");
+  const RPC_URL = "https://api.devnet.solana.com";//"http://127.0.0.1:8899"; // local validator URL
   
   // REPLACE 
-  let FACTORY_PUBKEY= new PublicKey("4Qr1V3pQkK23DzL36b5cLnLEHqSj1gAVgBCJQFFHhJQa");
+  let FACTORY_PUBKEY= null; //new PublicKey("Gj2KCKfJFwe4UWuAXDytkumRVnVXmyfzLy7Z1gwery2p");
   
   async function loadWallet(): Promise<Wallet> {
-    const keyPath = path.join(__dirname, '..' ,'id.json');
+    const keyPath = path.join(__dirname, '..' ,'id2.json');
     if (!fs.existsSync(keyPath)) {
       throw new Error('Wallet key file not found. Please place id.json in the script directory.');
     }
@@ -57,7 +57,8 @@ import {
       .rpc();
       
     console.log("Factory created:", factory.publicKey.toString());
-    
+    process.exit(1);
+
     return factory.publicKey;
   }
   
@@ -72,16 +73,25 @@ import {
     basePrice: number;
     requests: { price: number; description: string }[];
   }) {
-    // Fetch factory to get pairs_count
+    // Fetch the current pairs_count from the factory
     const factory = await program.account.factory.fetch(factoryPubkey);
-    const pairCount = factory.pairsCount;
+    const pairsCount = factory.pairsCount;
   
-    // Derive pair PDA for the new pair
+    // Derive the pair address
     const [pairAddress] = PublicKey.findProgramAddressSync(
       [
         Buffer.from("pair"),
         program.provider.publicKey.toBuffer(),
-        new BN(pairCount).toArrayLike(Buffer, "le", 8),
+        new BN(pairsCount).toArrayLike(Buffer, "le", 8)
+      ],
+      program.programId
+    );
+  
+    // Derive the vault address
+    const [vaultAddress] = PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("vault"),
+        pairAddress.toBuffer()
       ],
       program.programId
     );
@@ -117,24 +127,36 @@ import {
       programId: TOKEN_PROGRAM_ID,
     });
   
-    console.log("\nCreating new pair with params:", formattedParams);
+    console.log("\nCreating new pair with params:", pairsCount, pairAddress.toString());
+
+    try {
+      await program.methods
+        .createPair(formattedParams)
+        .accounts({
+          factory: factoryPubkey,
+         // pair: pairAddress,
+          attentionTokenMint: mintKeypair.publicKey,
+          creatorTokenAccount: creatorTokenAccountAddress,
+          creator: program.provider.publicKey,
+        //  tokenProgram: TOKEN_PROGRAM_ID,
+        //  associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+        // systemProgram: SystemProgram.programId,
+        //  rent: anchor.web3.SYSVAR_RENT_PUBKEY,
+       //   vault: vaultAddress,
+        })
+        .preInstructions([createMintAccountIx])
+        .signers([mintKeypair])
+        .rpc();
   
-    await program.methods
-      .createPair(formattedParams)
-      .accounts({
-        factory: factoryPubkey,
-        attentionTokenMint: mintKeypair.publicKey,
-        creatorTokenAccount: creatorTokenAccountAddress,
-        creator: program.provider.publicKey
-      })
-      .preInstructions([createMintAccountIx])
-      .signers([mintKeypair])
-      .rpc();
+      console.log("Pair created at:", pairAddress.toString());
+      console.log("Attention token mint:", mintKeypair.publicKey.toString());
+      console.log("Vault address:", vaultAddress.toString());
   
-    console.log("Pair created at:", pairAddress.toString());
-    console.log("Attention token mint:", mintKeypair.publicKey.toString());
-  
-    return { pairAddress, mint: mintKeypair.publicKey, creatorTokenAccountAddress };
+      return { pairAddress, mint: mintKeypair.publicKey, creatorTokenAccountAddress, vaultAddress };
+    } catch (error) {
+      console.error("Error creating pair:", error);
+      throw error;
+    }
   }
   
   async function fetchPairDetails(program: Program<Flake>, pairAddress: PublicKey) {
