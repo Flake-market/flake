@@ -175,12 +175,12 @@ describe("factory", () => {
 
     // Get pair data to find creator
     const pairData = await program.account.pair.fetch(pairAddress);
-    console.log("Base price:", pairData.basePrice.toString());
-    console.log("SOL amount to swap:", swapAmount.toString());
-    console.log(
-      "Expected tokens:",
-      swapAmount.div(pairData.basePrice).toString()
-    );
+    // console.log("Base price:", pairData.basePrice.toString());
+    // console.log("SOL amount to swap:", swapAmount.toString());
+    // console.log(
+    //   "Expected tokens:",
+    //   swapAmount.div(pairData.basePrice).toString()
+    // );
 
     await program.methods
       .swap(swapAmount, minAmountOut, true)
@@ -202,7 +202,7 @@ describe("factory", () => {
     let tokenInfo = await program.provider.connection.getTokenAccountBalance(
       userATA
     );
-    console.log("Actual tokens received:", tokenInfo.value.amount);
+    //console.log("Actual tokens received:", tokenInfo.value.amount);
   });
 
   it("Can submit a request for advertisement", async () => {
@@ -216,12 +216,12 @@ describe("factory", () => {
     let creatorTokenInfo =
       await program.provider.connection.getTokenAccountBalance(creatorATA);
     const initialCreatorBalance = Number(creatorTokenInfo.value.amount);
-    console.log("Initial creator token balance:", initialCreatorBalance);
+    //  console.log("Initial creator token balance:", initialCreatorBalance);
 
     const pairData = await program.account.pair.fetch(pairAddress);
     const requestIndex = 0;
     const requiredTokens = pairData.requests[requestIndex].price;
-    console.log("Required tokens for request:", requiredTokens.toString());
+    //  console.log("Required tokens for request:", requiredTokens.toString());
 
     const adText = "This is a sponsored post about an awesome product!";
 
@@ -250,11 +250,6 @@ describe("factory", () => {
       creatorATA
     );
     const finalCreatorBalance = Number(creatorTokenInfo.value.amount);
-    console.log("Final creator token balance:", finalCreatorBalance);
-    console.log(
-      "Creator tokens received:",
-      finalCreatorBalance - initialCreatorBalance
-    );
 
     // Verify token transfer
     expect(finalUserBalance).to.equal(initialUserBalance - requiredTokens);
@@ -270,4 +265,164 @@ describe("factory", () => {
     expect(latestRequest.requestIndex).to.equal(requestIndex);
     expect(latestRequest.adText).to.equal(adText);
   });
+
+  it("Cannot submit request with invalid index", async () => {
+    const invalidIndex = 99;
+    const adText = "This should fail";
+
+    try {
+      await program.methods
+        .submitRequest(invalidIndex, adText)
+        .accounts({
+          pair: pairAddress,
+          attentionTokenMint: mintKeypair.publicKey,
+          creatorTokenAccount: creatorATA,
+          userTokenAccount: userATA,
+          user: user.publicKey,
+        })
+        .signers([user])
+        .rpc();
+
+      // If we reach here, the test should fail
+      expect.fail("Should have thrown an error");
+    } catch (error) {
+      expect(error.message).to.include("Invalid request index");
+    }
+  });
+  it("Cannot submit request with too long ad text", async () => {
+    const requestIndex = 0;
+    // Create string longer than 280 characters
+    const adText = "x".repeat(281);
+
+    try {
+      await program.methods
+        .submitRequest(requestIndex, adText)
+        .accounts({
+          pair: pairAddress,
+          attentionTokenMint: mintKeypair.publicKey,
+          creatorTokenAccount: creatorATA,
+          userTokenAccount: userATA,
+          user: user.publicKey,
+        })
+        .signers([user])
+        .rpc();
+
+      expect.fail("Should have thrown an error");
+    } catch (error) {
+      expect(error.message).to.include("Ad text too long");
+    }
+  });
+  it("Creator can accept request", async () => {
+    // First submit a request
+    const requestIndex = 0;
+    const adText = "This is a sponsored post about an awesome product!";
+
+    await program.methods
+      .submitRequest(requestIndex, adText)
+      .accounts({
+        pair: pairAddress,
+        attentionTokenMint: mintKeypair.publicKey,
+        userTokenAccount: userATA,
+        creatorTokenAccount: creatorATA,
+        user: user.publicKey,
+      })
+      .signers([user])
+      .rpc();
+
+    // Now accept the request
+    await program.methods
+      .acceptRequest(requestIndex)
+      .accounts({
+        pair: pairAddress,
+        creator: creator.publicKey,
+      })
+      .rpc();
+
+    // Verify the request was accepted
+    const pair = await program.account.pair.fetch(pairAddress);
+    const request = pair.pendingRequests[0];
+
+    expect(request.status).to.deep.equal({ accepted: {} });
+    expect(request.requestIndex).to.equal(requestIndex);
+    expect(request.user.toString()).to.equal(user.publicKey.toString());
+  });
+  it("Non-creator cannot accept request", async () => {
+    const requestIndex = 0;
+
+    try {
+      await program.methods
+        .acceptRequest(requestIndex)
+        .accounts({
+          pair: pairAddress,
+          creator: user.publicKey, // Using user instead of creator
+        })
+        .signers([user])
+        .rpc();
+
+      expect.fail("Should have thrown unauthorized creator error");
+    } catch (error) {
+      expect(error.message).to.include("Unauthorized caller");
+    }
+  });
+
+  it("Cannot accept non-existent request", async () => {
+    const invalidRequestIndex = 99;
+
+    try {
+      await program.methods
+        .acceptRequest(invalidRequestIndex)
+        .accounts({
+          pair: pairAddress,
+          creator: creator.publicKey,
+        })
+        .rpc();
+
+      expect.fail("Should have thrown request not found error");
+    } catch (error) {
+      expect(error.message).to.include("RequestNotFound");
+    }
+  });
+
+  // it("Cannot accept already processed request", async () => {
+  //   const requestIndex = 0;
+  //   const adText = "Another sponsored post!";
+
+  //   // Submit new request
+  //   await program.methods
+  //       .submitRequest(requestIndex, adText)
+  //       .accounts({
+  //           pair: pairAddress,
+  //           attentionTokenMint: mintKeypair.publicKey,
+  //           userTokenAccount: userATA,
+  //           creatorTokenAccount: creatorATA,
+  //           user: user.publicKey,
+  //       })
+  //       .signers([user])
+  //       .rpc();
+
+  //   // Accept it first time
+  //   await program.methods
+  //       .acceptRequest(requestIndex)
+  //       .accounts({
+  //           pair: pairAddress,
+  //           creator: creator.publicKey,
+  //       })
+  //       .rpc();
+
+  //   // Try to accept it again
+  //   // try {
+  //       await program.methods
+  //           .acceptRequest(requestIndex)
+  //           .accounts({
+  //               pair: pairAddress,
+  //               creator: creator.publicKey,
+  //           })
+  //           .rpc();
+
+  //       //expect.fail("Should have thrown error for already processed request");
+  //   // } catch (error) {
+  //   //     console.error(error);
+  //   //     expect(error.message).to.include("Request not found or not in pending status");
+  //   // }
+  // });
 });

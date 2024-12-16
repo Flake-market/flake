@@ -1,8 +1,8 @@
 use anchor_lang::{prelude::*, solana_program, system_program};
-use anchor_spl::token::{self, Token, Transfer, Burn};
 use anchor_spl::associated_token::AssociatedToken;
-use solana_program::system_instruction;
+use anchor_spl::token::{self, Burn, Token, Transfer};
 use solana_program::program::invoke;
+use solana_program::system_instruction;
 
 declare_id!("5cYJsEQDUHGQuZ3SuSRjAN14g23iXtWboqoFJ6fJHtYM");
 
@@ -15,7 +15,7 @@ pub mod flake {
 
     pub fn initialize_factory(ctx: Context<InitializeFactory>, protocol_fee: u64) -> Result<()> {
         require!(protocol_fee <= 10000, FactoryError::InvalidProtocolFee);
-        
+
         let factory = &mut ctx.accounts.factory;
         factory.authority = ctx.accounts.authority.key();
         factory.fee_recipient = ctx.accounts.fee_recipient.key();
@@ -25,21 +25,19 @@ pub mod flake {
         Ok(())
     }
 
-    pub fn create_pair(
-        ctx: Context<CreatePair>,
-        params: CreatePairParams,
-    ) -> Result<()> {
+    pub fn create_pair(ctx: Context<CreatePair>, params: CreatePairParams) -> Result<()> {
         require!(params.base_price > 0, FactoryError::InvalidBasePrice);
         require!(
-            params.name.len() <= 32 && 
-            params.ticker.len() <= 10 && 
-            params.description.len() <= 200,
+            params.name.len() <= 32 && params.ticker.len() <= 10 && params.description.len() <= 200,
             FactoryError::InvalidStringLength
         );
 
         for request in &params.requests {
             require!(request.price > 0, FactoryError::InvalidRequestPrice);
-            require!(request.description.len() <= 200, FactoryError::InvalidStringLength);
+            require!(
+                request.description.len() <= 200,
+                FactoryError::InvalidStringLength
+            );
         }
 
         let pair = &mut ctx.accounts.pair;
@@ -54,7 +52,7 @@ pub mod flake {
         pair.protocol_fee = factory.protocol_fee;
         pair.creator_fee = 100; // 1% creator fee
         pair.creation_number = factory.pairs_count;
-        
+
         pair.name = params.name;
         pair.ticker = params.ticker;
         pair.description = params.description;
@@ -68,7 +66,6 @@ pub mod flake {
 
         // Increase pairs_count
         factory.pairs_count = factory.pairs_count.checked_add(1).unwrap();
-
 
         // Initialize the mint (Attention Token Mint)
         token::initialize_mint(
@@ -103,16 +100,19 @@ pub mod flake {
         let pair = &ctx.accounts.pair;
 
         let amount_out = calculate_output_amount(amount_in, pair.base_price)?;
-        require!(amount_out >= minimum_amount_out, FactoryError::SlippageExceeded);
+        require!(
+            amount_out >= minimum_amount_out,
+            FactoryError::SlippageExceeded
+        );
 
-        let creator_fee = amount_in.checked_mul(pair.creator_fee).unwrap().checked_div(10000).unwrap();
+        let creator_fee = amount_in
+            .checked_mul(pair.creator_fee)
+            .unwrap()
+            .checked_div(10000)
+            .unwrap();
         let vault_bump = ctx.bumps.vault;
         let binding = pair.key();
-        let vault_seeds = &[
-            b"vault",
-            binding.as_ref(),
-            &[vault_bump],
-        ];
+        let vault_seeds = &[b"vault", binding.as_ref(), &[vault_bump]];
         if is_buy {
             // Transfer SOL from user to vault
             invoke(
@@ -137,7 +137,7 @@ pub mod flake {
                         creator_fee,
                     ),
                     &[
-                        ctx.accounts.vault.to_account_info(),  
+                        ctx.accounts.vault.to_account_info(),
                         ctx.accounts.creator.to_account_info(),
                         ctx.accounts.system_program.to_account_info(),
                     ],
@@ -202,19 +202,19 @@ pub mod flake {
         ad_text: String,
     ) -> Result<()> {
         let pair = &mut ctx.accounts.pair;
-        
+
         // Validate request index
         require!(
             (request_index as usize) < pair.requests.len(),
             FactoryError::InvalidRequestIndex
         );
-        
+
         // Validate ad text length
         require!(ad_text.len() <= 280, FactoryError::AdTextTooLong);
-        
+
         // Get required token amount from requests config
         let required_tokens = pair.requests[request_index as usize].price;
-        
+
         // Transfer tokens from user to creator
         token::transfer(
             CpiContext::new(
@@ -227,7 +227,7 @@ pub mod flake {
             ),
             required_tokens,
         )?;
-    
+
         // Create and store the request
         let request = Request {
             user: ctx.accounts.user.key(),
@@ -236,9 +236,9 @@ pub mod flake {
             timestamp: Clock::get()?.unix_timestamp,
             status: RequestStatus::Pending,
         };
-    
+
         pair.pending_requests.push(request.clone());
-    
+
         // Emit event
         emit!(RequestSubmitted {
             pair_key: pair.key(),
@@ -247,7 +247,32 @@ pub mod flake {
             ad_text: request.ad_text,
             timestamp: request.timestamp,
         });
-    
+
+        Ok(())
+    }
+    pub fn accept_request(ctx: Context<AcceptRequest>, request_index: u8) -> Result<()> {
+        let pair = &mut ctx.accounts.pair;
+
+        // Find the pending request by both index and pending status
+        let request_position = pair
+            .pending_requests
+            .iter()
+            .position(|r| r.request_index == request_index && r.status == RequestStatus::Pending)
+            .ok_or(FactoryError::RequestNotFound)?;
+
+        let request = &mut pair.pending_requests[request_position];
+
+        // No need to check status again since we filtered for Pending above
+        request.status = RequestStatus::Accepted;
+
+        // Emit event
+        emit!(RequestAccepted {
+            creator: ctx.accounts.creator.key(),
+            request_index: request.request_index,
+            user: request.user,
+            timestamp: Clock::get()?.unix_timestamp,
+        });
+
         Ok(())
     }
 }
@@ -260,10 +285,10 @@ pub struct InitializeFactory<'info> {
         space = 8 + 32 + 32 + 8 + 8
     )]
     pub factory: Account<'info, Factory>,
-    
+
     /// CHECK: Only storing pubkey
     pub fee_recipient: UncheckedAccount<'info>,
-    
+
     #[account(mut)]
     pub authority: Signer<'info>,
     pub system_program: Program<'info, System>,
@@ -274,7 +299,7 @@ pub struct InitializeFactory<'info> {
 pub struct CreatePair<'info> {
     #[account(mut)]
     pub factory: Account<'info, Factory>,
-    
+
     #[account(
         init,
         payer = creator,
@@ -283,11 +308,11 @@ pub struct CreatePair<'info> {
         space = 3100
     )]
     pub pair: Account<'info, Pair>,
-    
+
     /// CHECK: Initialized by CPI later
     #[account(mut)]
     pub attention_token_mint: UncheckedAccount<'info>,
-    
+
     /// CHECK: Created by token program for the creator if needed
     #[account(mut)]
     pub creator_token_account: UncheckedAccount<'info>,
@@ -309,22 +334,22 @@ pub struct CreatePair<'info> {
         bump,
         owner = system_program::ID
     )]
-    pub vault: UncheckedAccount<'info>,  // Changed back to UncheckedAccount
+    pub vault: UncheckedAccount<'info>, // Changed back to UncheckedAccount
 }
 
 #[derive(Accounts)]
 pub struct Swap<'info> {
     #[account(mut)]
     pub pair: Account<'info, Pair>,
-    
+
     /// CHECK: SPL Token mint account
     #[account(mut)]
     pub attention_token_mint: UncheckedAccount<'info>,
-    
+
     /// CHECK: SPL Token account
     #[account(mut)]
     pub user_token_account: UncheckedAccount<'info>,
-    
+
     #[account(mut)]
     pub user: Signer<'info>,
 
@@ -417,9 +442,15 @@ pub enum FactoryError {
     AdTextTooLong,
     #[msg("Insufficient tokens")]
     InsufficientTokens,
+    #[msg("Unauthorized caller")]
+    UnauthorizedCaller,
+    #[msg("Request not found or not in pending status")]
+    RequestNotFound,
+    #[msg("Request has already been processed")]
+    RequestAlreadyProcessed,
 }
 
-#[event] 
+#[event]
 pub struct PairCreated {
     pub pair_id: u64,
     pub pair_key: Pubkey,
@@ -431,11 +462,11 @@ pub struct PairCreated {
 pub struct SubmitRequest<'info> {
     #[account(mut)]
     pub pair: Account<'info, Pair>,
-    
+
     /// CHECK: SPL Token mint account
     #[account(mut)]
     pub attention_token_mint: UncheckedAccount<'info>,
-    
+
     /// CHECK: SPL Token account that holds the tokens to be spent
     #[account(mut)]
     pub user_token_account: UncheckedAccount<'info>,
@@ -443,7 +474,7 @@ pub struct SubmitRequest<'info> {
     /// CHECK: Creator's token account to receive tokens
     #[account(mut)]
     pub creator_token_account: UncheckedAccount<'info>,
-    
+
     #[account(mut)]
     pub user: Signer<'info>,
 
@@ -468,7 +499,7 @@ pub enum RequestStatus {
     Rejected,
     Refunded,
 }
- 
+
 #[event]
 pub struct RequestSubmitted {
     pub pair_key: Pubkey,
@@ -478,9 +509,32 @@ pub struct RequestSubmitted {
     pub timestamp: i64,
 }
 
+#[derive(Accounts)]
+pub struct AcceptRequest<'info> {
+    #[account(mut)]
+    pub pair: Account<'info, Pair>,
+
+    #[account(
+        mut,
+        constraint = creator.key() == pair.creator @ FactoryError::UnauthorizedCaller
+    )]
+    pub creator: Signer<'info>,
+
+    pub system_program: Program<'info, System>,
+}
+
+#[event]
+pub struct RequestAccepted {
+    pub creator: Pubkey,
+    pub request_index: u8,
+    pub user: Pubkey,
+    pub timestamp: i64,
+}
 
 fn calculate_output_amount(amount_in: u64, base_price: u64) -> Result<u64> {
     require!(base_price > 0, FactoryError::InvalidBasePrice);
-    let amount_out = amount_in.checked_div(base_price).ok_or(FactoryError::InvalidBasePrice)?;
+    let amount_out = amount_in
+        .checked_div(base_price)
+        .ok_or(FactoryError::InvalidBasePrice)?;
     Ok(amount_out)
 }
