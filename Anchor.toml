@@ -8,10 +8,10 @@ skip-lint = false
 flake = "5cYJsEQDUHGQuZ3SuSRjAN14g23iXtWboqoFJ6fJHtYM"
 
 [registry]
-url = "https://api.devnet.solana.com"
+url = "https://api.localnet.solana.com"
 
 [provider]
-cluster = "devnet"
+cluster = "localnet"
 wallet = "./id2.json"
 #wallet = "~/.config/solana/id.json"
 [scripts]

@@ -1,5 +1,5 @@
 use anchor_lang::{prelude::*, solana_program, system_program};
-use anchor_spl::token::{self, Burn, Mint, MintTo, Token, TokenAccount};
+use anchor_spl::token::{self, Token, Transfer, Burn};
 use anchor_spl::associated_token::AssociatedToken;
 use solana_program::system_instruction;
 use solana_program::program::invoke;
@@ -196,181 +196,58 @@ pub mod flake {
         Ok(())
     }
 
-
-    pub fn submit_request(ctx: Context<SubmitRequest>, amount: u64, text: String) -> Result<()> {
+    pub fn submit_request(
+        ctx: Context<SubmitRequest>,
+        request_index: u8,
+        ad_text: String,
+    ) -> Result<()> {
         let pair = &mut ctx.accounts.pair;
         
-        // Transfer tokens from requester to pair's token account
+        // Validate request index
+        require!(
+            (request_index as usize) < pair.requests.len(),
+            FactoryError::InvalidRequestIndex
+        );
+        
+        // Validate ad text length
+        require!(ad_text.len() <= 280, FactoryError::AdTextTooLong);
+        
+        // Get required token amount from requests config
+        let required_tokens = pair.requests[request_index as usize].price;
+        
+        // Transfer tokens from user to creator
         token::transfer(
             CpiContext::new(
                 ctx.accounts.token_program.to_account_info(),
                 token::Transfer {
-                    from: ctx.accounts.requester_token_account.to_account_info(),
-                    to: ctx.accounts.pair_token_account.to_account_info(),
-                    authority: ctx.accounts.requester.to_account_info(),
+                    from: ctx.accounts.user_token_account.to_account_info(),
+                    to: ctx.accounts.creator_token_account.to_account_info(),
+                    authority: ctx.accounts.user.to_account_info(),
                 },
             ),
-            amount,
+            required_tokens,
         )?;
-        
-        // Add request to pair's state
-        pair.ad_requests.push(AdRequest {
-            requester: ctx.accounts.requester.key(),
-            token_amount: amount,
-            text,
-            status: RequestStatus::Pending,
+    
+        // Create and store the request
+        let request = Request {
+            user: ctx.accounts.user.key(),
+            request_index,
+            ad_text,
             timestamp: Clock::get()?.unix_timestamp,
+            status: RequestStatus::Pending,
+        };
+    
+        pair.pending_requests.push(request.clone());
+    
+        // Emit event
+        emit!(RequestSubmitted {
+            pair_key: pair.key(),
+            user: request.user,
+            request_index: request.request_index,
+            ad_text: request.ad_text,
+            timestamp: request.timestamp,
         });
-
-        Ok(())
-    }
-
-    // Accept request and hold tokens
-    pub fn accept_request(ctx: Context<ProcessRequest>, request_index: u64) -> Result<()> {
-        let pair = &mut ctx.accounts.pair;
-        require!(request_index < pair.ad_requests.len() as u64, ErrorCode::InvalidRequestIndex);
-        
-        let request = &mut pair.ad_requests[request_index as usize];
-        require!(request.status == RequestStatus::Pending, ErrorCode::InvalidRequestStatus);
-        
-        request.status = RequestStatus::Accepted;
-        Ok(())
-    }
-
-    pub fn accept_request_and_burn(ctx: Context<ProcessRequest>, request_index: u64) -> Result<()> {
-        // First, do all the operations that need immutable access to pair
-        let pair = &ctx.accounts.pair;
-        require!(request_index < pair.ad_requests.len() as u64, ErrorCode::InvalidRequestIndex);
-        
-        let base_price = pair.base_price;
-        let token_amount = pair.ad_requests[request_index as usize].token_amount;
-        let creator_key = ctx.accounts.creator.key();
-        let creation_number = pair.creation_number;
-        let pair_bump = pair.bump;
-        let pair_key = pair.key();
-
-        // Calculate SOL amount to receive
-        let sol_amount = calculate_output_amount(token_amount, base_price)?;
-
-        // Now we can borrow pair mutably
-        let pair = &mut ctx.accounts.pair;
-        let request = &mut pair.ad_requests[request_index as usize];
-        require!(request.status == RequestStatus::Pending, ErrorCode::InvalidRequestStatus);
-
-        // Burn tokens
-        token::burn(
-            CpiContext::new_with_signer(
-                ctx.accounts.token_program.to_account_info(),
-                token::Burn {
-                    mint: ctx.accounts.attention_token_mint.to_account_info(),
-                    from: ctx.accounts.requester_token_account.to_account_info(),
-                    authority: ctx.accounts.creator.to_account_info(),
-                },
-                &[&[
-                    b"pair",
-                    creator_key.as_ref(),
-                    &creation_number.to_le_bytes().as_ref(),
-                    &[pair_bump],
-                ]],
-            ),
-            token_amount,
-        )?;
-
-        // Transfer SOL from vault to creator
-        let vault_bump = ctx.bumps.vault;
-        let vault_seeds = &[
-            b"vault",
-            pair_key.as_ref(),
-            &[vault_bump],
-        ];
-        solana_program::program::invoke_signed(
-            &solana_program::system_instruction::transfer(
-                &ctx.accounts.vault.key(),
-                &creator_key,
-                sol_amount,
-            ),
-            &[
-                ctx.accounts.vault.to_account_info(),
-                ctx.accounts.creator.to_account_info(),
-                ctx.accounts.system_program.to_account_info(),
-            ],
-            &[vault_seeds],
-        )?;
-
-        request.status = RequestStatus::Completed;
-        Ok(())
-    }
-
-    // Reject request and return tokens
-  pub fn reject_request(ctx: Context<ProcessRequest>, request_index: u64) -> Result<()> {
-        // First, do all the operations that need immutable access to pair
-        let pair = &ctx.accounts.pair;
-        require!(request_index < pair.ad_requests.len() as u64, ErrorCode::InvalidRequestIndex);
-        
-        let token_amount = pair.ad_requests[request_index as usize].token_amount;
-        let creator_key = ctx.accounts.creator.key();
-        let creation_number = pair.creation_number;
-        let pair_bump = pair.bump;
-        let pair_key = pair.key();
-
-        // Now we can borrow pair mutably
-        let pair = &mut ctx.accounts.pair;
-        let request = &mut pair.ad_requests[request_index as usize];
-        require!(request.status == RequestStatus::Pending, ErrorCode::InvalidRequestStatus);
-
-        // Return tokens to requester
-        token::transfer(
-            CpiContext::new_with_signer(
-                ctx.accounts.token_program.to_account_info(),
-                token::Transfer {
-                    from: ctx.accounts.pair_token_account.to_account_info(),
-                    to: ctx.accounts.requester_token_account.to_account_info(),
-                    authority: ctx.accounts.pair.to_account_info(),                },
-          
-                &[&[
-                    b"pair",
-                    creator_key.as_ref(),
-                    creation_number.to_le_bytes().as_ref(),
-                    &[pair_bump],
-                ]],
-            ),
-            token_amount,
-        )?;
-
-        request.status = RequestStatus::Rejected;
-        Ok(())
-    }
-
-    // Claim accumulated fees
-    pub fn claim_fees(ctx: Context<ClaimFees>) -> Result<()> {
-        let pair = &mut ctx.accounts.pair;
-        let fees_to_claim = pair.unclaimed_fees;
-        require!(fees_to_claim > 0, ErrorCode::NoFeesToClaim);
-        
-        // Transfer fees from vault to creator
-        let vault_bump = ctx.bumps.vault;
-        let binding = pair.key();
-        let vault_seeds = &[
-            b"vault",
-            binding.as_ref(),
-            &[vault_bump],
-        ];
-        
-        solana_program::program::invoke_signed(
-            &solana_program::system_instruction::transfer(
-                &ctx.accounts.vault.key(),
-                &ctx.accounts.creator.key(),
-                fees_to_claim,
-            ),
-            &[
-                ctx.accounts.vault.to_account_info(),
-                ctx.accounts.creator.to_account_info(),
-                ctx.accounts.system_program.to_account_info(),
-            ],
-            &[vault_seeds],
-        )?;
-        
-        pair.unclaimed_fees = 0;
+    
         Ok(())
     }
 }
@@ -403,26 +280,7 @@ pub struct CreatePair<'info> {
         payer = creator,
         seeds = [b"pair", creator.key().as_ref(), factory.pairs_count.to_le_bytes().as_ref()],
         bump,
-        space = 8 + // discriminator
-        1 + // bump
-        32 + // creator
-        32 + // attention_token_mint
-        32 + // creator_token_account
-        8 + // base_price
-        8 + // protocol_fee
-        8 + // creator_fee
-        8 + // creation_number
-        32 + // vault
-        (32 + 4) + // name
-        (10 + 4) + // ticker
-        (200 + 4) + // description
-        (200 + 4) + // token_image
-        (100 + 4) + // twitter
-        (100 + 4) + // telegram
-        (200 + 4) + // website
-        (4 + 10 * (8 + 200 + 4)) + // requests vec
-        (4 + 5 * (32 + 8 + 200 + 1 + 8 + 4)) + // ad_requests vec (max 5)
-        8 // unclaimed_fees
+        space = 3100
     )]
     pub pair: Account<'info, Pair>,
     
@@ -498,89 +356,6 @@ pub struct Factory {
     pub pairs_count: u64,
 }
 
-#[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
-pub struct AdRequest {
-    pub requester: Pubkey,
-    pub token_amount: u64,
-    pub text: String,
-    pub status: RequestStatus,
-    pub timestamp: i64,
-}
-
-#[derive(AnchorSerialize, AnchorDeserialize, Clone, Default, PartialEq)]
-pub enum RequestStatus {
-    #[default]
-    Pending,
-    Accepted,
-    Rejected,
-    Completed,
-}
-
-#[derive(Accounts)]
-pub struct SubmitRequest<'info> {
-    #[account(mut)]
-    pub pair: Account<'info, Pair>,
-    
-    #[account(mut)]
-    pub requester: Signer<'info>,
-    
-    #[account(mut)]
-    pub requester_token_account: Account<'info, TokenAccount>,
-    
-    #[account(mut)]
-    pub pair_token_account: Account<'info, TokenAccount>,
-    
-    pub token_program: Program<'info, Token>,
-}
-
-#[derive(Accounts)]
-pub struct ProcessRequest<'info> {
-    #[account(mut, has_one = creator)]
-    pub pair: Account<'info, Pair>,
-    
-    #[account(mut)]
-    pub creator: Signer<'info>,
-    
-    #[account(mut)]
-    pub attention_token_mint: Account<'info, Mint>,
-    
-    #[account(mut)]
-    pub requester_token_account: Account<'info, TokenAccount>,
-    
-    pub token_program: Program<'info, Token>,
-    
-    /// CHECK: System program owned vault PDA
-    #[account(
-        seeds = [b"vault", pair.key().as_ref()],
-        bump,
-    )]
-    pub vault: UncheckedAccount<'info>,
-
-    pub system_program: Program<'info, System>,
-
-    #[account(mut)]
-    pub pair_token_account: Account<'info, TokenAccount>,
-}
-
-#[derive(Accounts)]
-pub struct ClaimFees<'info> {
-    #[account(mut, has_one = creator)]
-    pub pair: Account<'info, Pair>,
-    
-    #[account(mut)]
-    pub creator: Signer<'info>,
-    
-    /// CHECK: System program owned vault PDA
-    #[account(
-        mut,
-        seeds = [b"vault", pair.key().as_ref()],
-        bump,
-    )]
-    pub vault: UncheckedAccount<'info>,
-    
-    pub system_program: Program<'info, System>,
-}
-
 #[account]
 #[derive(Default)]
 pub struct Pair {
@@ -602,9 +377,7 @@ pub struct Pair {
     pub telegram: String,
     pub website: String,
     pub requests: Vec<RequestConfig>,
-
-    pub ad_requests: Vec<AdRequest>,
-    pub unclaimed_fees: u64,
+    pub pending_requests: Vec<Request>,
 }
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
@@ -638,15 +411,13 @@ pub enum FactoryError {
     InvalidRequestPrice,
     #[msg("Slippage tolerance exceeded")]
     SlippageExceeded,
-}
-
-#[error_code]
-pub enum ErrorCode {
+    #[msg("Invalid request index")]
     InvalidRequestIndex,
-    InvalidRequestStatus,
-    NoFeesToClaim,
+    #[msg("Ad text too long")]
+    AdTextTooLong,
+    #[msg("Insufficient tokens")]
+    InsufficientTokens,
 }
-
 
 #[event] 
 pub struct PairCreated {
@@ -655,6 +426,58 @@ pub struct PairCreated {
     pub creator: Pubkey,
     pub base_price: u64,
 }
+
+#[derive(Accounts)]
+pub struct SubmitRequest<'info> {
+    #[account(mut)]
+    pub pair: Account<'info, Pair>,
+    
+    /// CHECK: SPL Token mint account
+    #[account(mut)]
+    pub attention_token_mint: UncheckedAccount<'info>,
+    
+    /// CHECK: SPL Token account that holds the tokens to be spent
+    #[account(mut)]
+    pub user_token_account: UncheckedAccount<'info>,
+
+    /// CHECK: Creator's token account to receive tokens
+    #[account(mut)]
+    pub creator_token_account: UncheckedAccount<'info>,
+    
+    #[account(mut)]
+    pub user: Signer<'info>,
+
+    pub token_program: Program<'info, Token>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
+pub struct Request {
+    pub user: Pubkey,
+    pub request_index: u8,
+    pub ad_text: String,
+    pub timestamp: i64,
+    pub status: RequestStatus,
+}
+
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Default, PartialEq)]
+pub enum RequestStatus {
+    #[default]
+    Pending,
+    Accepted,
+    Rejected,
+    Refunded,
+}
+ 
+#[event]
+pub struct RequestSubmitted {
+    pub pair_key: Pubkey,
+    pub user: Pubkey,
+    pub request_index: u8,
+    pub ad_text: String,
+    pub timestamp: i64,
+}
+
 
 fn calculate_output_amount(amount_in: u64, base_price: u64) -> Result<u64> {
     require!(base_price > 0, FactoryError::InvalidBasePrice);

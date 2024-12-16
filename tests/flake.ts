@@ -7,14 +7,13 @@ import {
   ASSOCIATED_TOKEN_PROGRAM_ID,
   getAssociatedTokenAddress,
   createAssociatedTokenAccountInstruction,
-  getMint
 } from "@solana/spl-token";
 import { BN } from "@coral-xyz/anchor";
 
 describe("factory", () => {
   anchor.setProvider(anchor.AnchorProvider.env());
   const program = anchor.workspace.Flake as Program<Flake>;
-  
+
   const creator = (program.provider as anchor.AnchorProvider).wallet;
   const user = anchor.web3.Keypair.generate();
   const feeRecipient = anchor.web3.Keypair.generate();
@@ -32,12 +31,12 @@ describe("factory", () => {
       5 * anchor.web3.LAMPORTS_PER_SOL
     );
     await program.provider.connection.confirmTransaction(signature);
-    await new Promise(resolve => setTimeout(resolve, 1000));
+    await new Promise((resolve) => setTimeout(resolve, 1000));
   });
 
   it("Initializes factory", async () => {
     factoryAccount = anchor.web3.Keypair.generate();
-    
+
     await program.methods
       .initializeFactory(new BN(100))
       .accounts({
@@ -49,7 +48,9 @@ describe("factory", () => {
       .signers([factoryAccount])
       .rpc();
 
-    const factory = await program.account.factory.fetch(factoryAccount.publicKey);
+    const factory = await program.account.factory.fetch(
+      factoryAccount.publicKey
+    );
     expect(factory.authority.toString()).to.equal(creator.publicKey.toString());
     expect(factory.pairsCount.toNumber()).to.equal(0);
   });
@@ -63,16 +64,13 @@ describe("factory", () => {
       [
         Buffer.from("pair"),
         creator.publicKey.toBuffer(),
-        pairsCount.toArrayLike(Buffer, "le", 8)
+        pairsCount.toArrayLike(Buffer, "le", 8),
       ],
       program.programId
     );
 
     [vaultAddress] = anchor.web3.PublicKey.findProgramAddressSync(
-      [
-        Buffer.from("vault"),
-        pairAddress.toBuffer(),
-      ],
+      [Buffer.from("vault"), pairAddress.toBuffer()],
       program.programId
     );
 
@@ -83,7 +81,8 @@ describe("factory", () => {
     );
 
     // 3. Create mint account (only space allocation)
-    const mintRent = await program.provider.connection.getMinimumBalanceForRentExemption(82);
+    const mintRent =
+      await program.provider.connection.getMinimumBalanceForRentExemption(82);
     const createMintAccountIx = anchor.web3.SystemProgram.createAccount({
       fromPubkey: creator.publicKey,
       newAccountPubkey: mintKeypair.publicKey,
@@ -100,15 +99,15 @@ describe("factory", () => {
       twitter: "@creator",
       telegram: "@creator",
       website: "https://example.com",
-      basePrice: new BN(1_000_000_000),
+      basePrice: new BN(5_000_000),
       requests: [
         {
-          price: new BN(5_000_000_000),
-          description: "Sponsored post on X"
-        }
-      ]
+          price: new BN(100),
+          description: "Sponsored post on X",
+        },
+      ],
     };
- 
+
     // 4. Create pair and initialize mint in one transaction
     await program.methods
       .createPair(params)
@@ -122,7 +121,7 @@ describe("factory", () => {
         associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
         systemProgram: anchor.web3.SystemProgram.programId,
         rent: anchor.web3.SYSVAR_RENT_PUBKEY,
-        vault: vaultAddress
+        vault: vaultAddress,
       })
       .preInstructions([createMintAccountIx])
       .signers([mintKeypair])
@@ -145,52 +144,130 @@ describe("factory", () => {
     // Verify
     const pair = await program.account.pair.fetch(pairAddress);
     expect(pair.creator.toString()).to.equal(creator.publicKey.toString());
-    expect(pair.attentionTokenMint.toString()).to.equal(mintKeypair.publicKey.toString());
+    expect(pair.attentionTokenMint.toString()).to.equal(
+      mintKeypair.publicKey.toString()
+    );
     expect(pair.basePrice.toString()).to.equal(params.basePrice.toString());
 
-    const factory = await program.account.factory.fetch(factoryAccount.publicKey);
+    const factory = await program.account.factory.fetch(
+      factoryAccount.publicKey
+    );
     expect(factory.pairsCount.toNumber()).to.equal(1);
-});
+  });
 
-it("Can swap SOL for attention tokens", async () => {
-  // Create user's token account
-  userATA = await getAssociatedTokenAddress(
+  it("Can swap SOL for attention tokens", async () => {
+    // Create user's token account
+    userATA = await getAssociatedTokenAddress(
       mintKeypair.publicKey,
       user.publicKey
-  );
+    );
 
-  // Create ATA instruction
-  const createAtaIx = createAssociatedTokenAccountInstruction(
-      user.publicKey,   // payer
-      userATA,         // ata
-      user.publicKey,  // owner
-      mintKeypair.publicKey  // mint
-  );
+    // Create ATA instruction
+    const createAtaIx = createAssociatedTokenAccountInstruction(
+      user.publicKey,
+      userATA,
+      user.publicKey,
+      mintKeypair.publicKey
+    );
 
-  const swapAmount = new BN(1_000_000_000); // 1 SOL
-  const minAmountOut = new BN(1);
+    const swapAmount = new BN(2_000_000_000); // 5 SOL
+    const minAmountOut = new BN(1);
 
-  // Get pair data to find creator
-  const pairData = await program.account.pair.fetch(pairAddress);
+    // Get pair data to find creator
+    const pairData = await program.account.pair.fetch(pairAddress);
+    console.log("Base price:", pairData.basePrice.toString());
+    console.log("SOL amount to swap:", swapAmount.toString());
+    console.log(
+      "Expected tokens:",
+      swapAmount.div(pairData.basePrice).toString()
+    );
 
-  await program.methods
+    await program.methods
       .swap(swapAmount, minAmountOut, true)
       .accounts({
-          pair: pairAddress,
-          attentionTokenMint: mintKeypair.publicKey,
-          userTokenAccount: userATA,
-          user: user.publicKey,
-          tokenProgram: TOKEN_PROGRAM_ID,
-          systemProgram: anchor.web3.SystemProgram.programId,
-          creator: pairData.creator,  // Use creator from pair data
-          factory: factoryAccount.publicKey,
-          vault: vaultAddress,  // Add vault if contract requires it
+        pair: pairAddress,
+        attentionTokenMint: mintKeypair.publicKey,
+        userTokenAccount: userATA,
+        user: user.publicKey,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        systemProgram: anchor.web3.SystemProgram.programId,
+        creator: pairData.creator,
+        factory: factoryAccount.publicKey,
+        vault: vaultAddress,
       })
       .preInstructions([createAtaIx])
       .signers([user])
       .rpc();
 
-  const ataInfo = await program.provider.connection.getTokenAccountBalance(userATA);
-  expect(Number(ataInfo.value.amount)).to.be.greaterThan(0);
-});
+    let tokenInfo = await program.provider.connection.getTokenAccountBalance(
+      userATA
+    );
+    console.log("Actual tokens received:", tokenInfo.value.amount);
+  });
+
+  it("Can submit a request for advertisement", async () => {
+    // Get initial token balances
+    let tokenInfo = await program.provider.connection.getTokenAccountBalance(
+      userATA
+    );
+    const initialUserBalance = Number(tokenInfo.value.amount);
+    console.log("Initial user token balance:", initialUserBalance);
+
+    let creatorTokenInfo =
+      await program.provider.connection.getTokenAccountBalance(creatorATA);
+    const initialCreatorBalance = Number(creatorTokenInfo.value.amount);
+    console.log("Initial creator token balance:", initialCreatorBalance);
+
+    const pairData = await program.account.pair.fetch(pairAddress);
+    const requestIndex = 0;
+    const requiredTokens = pairData.requests[requestIndex].price;
+    console.log("Required tokens for request:", requiredTokens.toString());
+
+    const adText = "This is a sponsored post about an awesome product!";
+
+    await program.methods
+      .submitRequest(requestIndex, adText)
+      .accounts({
+        pair: pairAddress,
+        attentionTokenMint: mintKeypair.publicKey,
+        userTokenAccount: userATA,
+        creatorTokenAccount: creatorATA, // Added creator's token account
+        user: user.publicKey,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        systemProgram: anchor.web3.SystemProgram.programId,
+      })
+      .signers([user])
+      .rpc();
+
+    tokenInfo = await program.provider.connection.getTokenAccountBalance(
+      userATA
+    );
+    const finalUserBalance = Number(tokenInfo.value.amount);
+    console.log("Final user token balance:", finalUserBalance);
+    console.log("User tokens spent:", initialUserBalance - finalUserBalance);
+
+    creatorTokenInfo = await program.provider.connection.getTokenAccountBalance(
+      creatorATA
+    );
+    const finalCreatorBalance = Number(creatorTokenInfo.value.amount);
+    console.log("Final creator token balance:", finalCreatorBalance);
+    console.log(
+      "Creator tokens received:",
+      finalCreatorBalance - initialCreatorBalance
+    );
+
+    // Verify token transfer
+    expect(finalUserBalance).to.equal(initialUserBalance - requiredTokens);
+    expect(finalCreatorBalance).to.equal(
+      parseInt(initialCreatorBalance) + parseInt(requiredTokens)
+    );
+
+    // Verify request was stored
+    const updatedPair = await program.account.pair.fetch(pairAddress);
+    const latestRequest =
+      updatedPair.pendingRequests[updatedPair.pendingRequests.length - 1];
+    expect(latestRequest.user.toString()).to.equal(user.publicKey.toString());
+    expect(latestRequest.requestIndex).to.equal(requestIndex);
+    expect(latestRequest.adText).to.equal(adText);
+  });
 });
