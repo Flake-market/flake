@@ -240,13 +240,13 @@ pub mod flake {
         pair.pending_requests.push(request.clone());
 
         // Emit event
-        emit!(RequestSubmitted {
-            pair_key: pair.key(),
-            user: request.user,
-            request_index: request.request_index,
-            ad_text: request.ad_text,
-            timestamp: request.timestamp,
-        });
+        // emit!(RequestSubmitted {
+        //     pair_key: pair.key(),
+        //     user: request.user,
+        //     request_index: request.request_index,
+        //     ad_text: request.ad_text,
+        //     timestamp: request.timestamp,
+        // });
 
         Ok(())
     }
@@ -266,12 +266,12 @@ pub mod flake {
         request.status = RequestStatus::Accepted;
 
         // Emit event
-        emit!(RequestAccepted {
-            creator: ctx.accounts.creator.key(),
-            request_index: request.request_index,
-            user: request.user,
-            timestamp: Clock::get()?.unix_timestamp,
-        });
+        // emit!(RequestAccepted {
+        //     creator: ctx.accounts.creator.key(),
+        //     request_index: request.request_index,
+        //     user: request.user,
+        //     timestamp: Clock::get()?.unix_timestamp,
+        // });
 
         Ok(())
     }
@@ -500,14 +500,14 @@ pub enum RequestStatus {
     Refunded,
 }
 
-#[event]
-pub struct RequestSubmitted {
-    pub pair_key: Pubkey,
-    pub user: Pubkey,
-    pub request_index: u8,
-    pub ad_text: String,
-    pub timestamp: i64,
-}
+// #[event]
+// pub struct RequestSubmitted {
+//     pub pair_key: Pubkey,
+//     pub user: Pubkey,
+//     pub request_index: u8,
+//     pub ad_text: String,
+//     pub timestamp: i64,
+// }
 
 #[derive(Accounts)]
 pub struct AcceptRequest<'info> {
@@ -523,13 +523,13 @@ pub struct AcceptRequest<'info> {
     pub system_program: Program<'info, System>,
 }
 
-#[event]
-pub struct RequestAccepted {
-    pub creator: Pubkey,
-    pub request_index: u8,
-    pub user: Pubkey,
-    pub timestamp: i64,
-}
+// #[event]
+// pub struct RequestAccepted {
+//     pub creator: Pubkey,
+//     pub request_index: u8,
+//     pub user: Pubkey,
+//     pub timestamp: i64,
+// }
 
 fn calculate_output_amount(amount_in: u64, base_price: u64) -> Result<u64> {
     require!(base_price > 0, FactoryError::InvalidBasePrice);
