@@ -305,7 +305,25 @@ pub struct CreatePair<'info> {
         payer = creator,
         seeds = [b"pair", creator.key().as_ref(), factory.pairs_count.to_le_bytes().as_ref()],
         bump,
-        space = 3100
+        space = 8 + // discriminator
+        1 + // bump
+        32 + // creator
+        32 + // attention_token_mint
+        32 + // creator_token_account
+        8 + // base_price
+        8 + // protocol_fee
+        8 + // creator_fee
+        8 + // creation_number
+        32 + // vault
+        36 + // name (32 + 4)
+        14 + // ticker (10 + 4)
+        204 + // description (200 + 4)
+        204 + // token_image (200 + 4)
+        104 + // twitter (100 + 4)
+        104 + // telegram (100 + 4)
+        104 + // website (100 + 4)
+        4 + (3 * (8 + 104)) + // requests (Vec<RequestConfig>, assume max 3 items)
+        4 + (10 * (32 + 1 + 104 + 8 + 1)) // pending_requests (Vec<Request>, assume max 10 items)
     )]
     pub pair: Account<'info, Pair>,
 
@@ -392,8 +410,7 @@ pub struct Pair {
     pub protocol_fee: u64,
     pub creator_fee: u64,
     pub creation_number: u64,
-    pub vault: Pubkey, // New field for vault
-
+    pub vault: Pubkey,
     pub name: String,
     pub ticker: String,
     pub description: String,
