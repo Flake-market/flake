@@ -48,11 +48,14 @@ pub mod flake {
         pair.creator = ctx.accounts.creator.key();
         pair.attention_token_mint = ctx.accounts.attention_token_mint.key();
         pair.creator_token_account = ctx.accounts.creator_token_account.key();
-        pair.base_price = params.base_price;
+        pair.base_price = params.base_price; // @TODO: to remove 
         pair.protocol_fee = factory.protocol_fee;
-        pair.creator_fee = 100; // 1% creator fee
+        pair.creator_fee = 0; // 1% creator fee
+        pair.s0 = 0; 
+        pair.pmin = 40000;
+        pair.pmax = 100000000;
+        pair.smax = 1000000000000000;
         pair.creation_number = factory.pairs_count;
-
         pair.name = params.name;
         pair.ticker = params.ticker;
         pair.description = params.description;
@@ -98,21 +101,50 @@ pub mod flake {
         is_buy: bool,
     ) -> Result<()> {
         let pair = &ctx.accounts.pair;
+        let user_key = ctx.accounts.user.key();
 
-        let amount_out = calculate_output_amount(amount_in, pair.base_price)?;
+        // Example: compute "amount_out" using the new formulae
+        let s0 = pair.s0 as f64;
+        let pmin = pair.pmin as f64;
+        let pmax = pair.pmax as f64;
+        let smax = pair.smax as f64;
+
+        // For demonstration, treat "amount_in" as "C" if is_buy,
+        // or as "deltaS" if not is_buy. Adjust as needed for your logic.
+        let amount_out = if is_buy {
+            exact_sol_to_tokens(
+                amount_in as f64, // C
+                s0,
+                pmin,
+                pmax,
+                smax,
+            )
+        } else {
+            exact_tokens_to_sol(
+                s0,
+                amount_in as f64, // deltaS
+                pmin,
+                pmax,
+                smax,
+            )
+        };
+
         require!(
             amount_out >= minimum_amount_out,
             FactoryError::SlippageExceeded
         );
 
+        // Creator fee
         let creator_fee = amount_in
             .checked_mul(pair.creator_fee)
             .unwrap()
             .checked_div(10000)
             .unwrap();
+
+        // Prepare vault seeds
         let vault_bump = ctx.bumps.vault;
-        let binding = pair.key();
-        let vault_seeds = &[b"vault", binding.as_ref(), &[vault_bump]];
+        let seeds = &ctx.accounts.vault_seeds(vault_bump);
+
         if is_buy {
             // Transfer SOL from user to vault
             invoke(
@@ -141,10 +173,11 @@ pub mod flake {
                         ctx.accounts.creator.to_account_info(),
                         ctx.accounts.system_program.to_account_info(),
                     ],
-                    &[vault_seeds],
+                    &[seeds],
                 )?;
             }
-
+            // Update s0 with new amount_out
+            pair.s0 = pair.s0.checked_add(amount_out).unwrap();
             // Mint attention tokens to the user
             token::mint_to(
                 CpiContext::new_with_signer(
@@ -156,7 +189,7 @@ pub mod flake {
                     },
                     &[&[
                         b"pair",
-                        ctx.accounts.creator.key().as_ref(),
+                        pair.creator.as_ref(),
                         pair.creation_number.to_le_bytes().as_ref(),
                         &[pair.bump],
                     ]],
@@ -164,7 +197,9 @@ pub mod flake {
                 amount_out,
             )?;
         } else {
-            // Sell: User burns tokens
+            // Sell: User burns tokens, then receives SOL from vault
+            // Update s0 with new amount_in
+            pair.s0 = pair.s0.checked_sub(amount_in).unwrap();
             token::burn(
                 CpiContext::new(
                     ctx.accounts.token_program.to_account_info(),
@@ -177,11 +212,10 @@ pub mod flake {
                 amount_in,
             )?;
 
-            // Transfer SOL from vault to user
             invoke_signed(
                 &system_instruction::transfer(
                     &ctx.accounts.vault.key(),
-                    &ctx.accounts.user.key(),
+                    &user_key,
                     amount_out,
                 ),
                 &[
@@ -189,9 +223,19 @@ pub mod flake {
                     ctx.accounts.user.to_account_info(),
                     ctx.accounts.system_program.to_account_info(),
                 ],
-                &[vault_seeds],
+                &[seeds],
             )?;
         }
+
+        // Emit the new event so we know it was a buy or sell, amounts, etc.
+        emit!(SwapExecuted {
+            is_buy,
+            amount_in,
+            amount_out,
+            user: user_key,
+            pair_key: pair.key(),
+            attention_token_mint: ctx.accounts.attention_token_mint.key()
+        });
 
         Ok(())
     }
@@ -240,13 +284,13 @@ pub mod flake {
         pair.pending_requests.push(request.clone());
 
         // Emit event
-        // emit!(RequestSubmitted {
-        //     pair_key: pair.key(),
-        //     user: request.user,
-        //     request_index: request.request_index,
-        //     ad_text: request.ad_text,
-        //     timestamp: request.timestamp,
-        // });
+        emit!(RequestSubmitted {
+            pair_key: pair.key(),
+            user: request.user,
+            request_index: request.request_index,
+            ad_text: request.ad_text,
+            timestamp: request.timestamp,
+        });
 
         Ok(())
     }
@@ -266,12 +310,12 @@ pub mod flake {
         request.status = RequestStatus::Accepted;
 
         // Emit event
-        // emit!(RequestAccepted {
-        //     creator: ctx.accounts.creator.key(),
-        //     request_index: request.request_index,
-        //     user: request.user,
-        //     timestamp: Clock::get()?.unix_timestamp,
-        // });
+        emit!(RequestAccepted {
+            creator: ctx.accounts.creator.key(),
+            request_index: request.request_index,
+            user: request.user,
+            timestamp: Clock::get()?.unix_timestamp,
+        });
 
         Ok(())
     }
@@ -323,7 +367,11 @@ pub struct CreatePair<'info> {
         104 + // telegram (100 + 4)
         104 + // website (100 + 4)
         4 + (3 * (8 + 104)) + // requests (Vec<RequestConfig>, assume max 3 items)
-        4 + (10 * (32 + 1 + 104 + 8 + 1)) // pending_requests (Vec<Request>, assume max 10 items)
+        4 + (10 * (32 + 1 + 104 + 8 + 1)) + // pending_requests (Vec<Request>, assume max 10 items)
+        8 + // s0
+        8 + // pmin
+        8 + // pmax
+        8 // smax
     )]
     pub pair: Account<'info, Pair>,
 
@@ -390,6 +438,13 @@ pub struct Swap<'info> {
     pub vault: UncheckedAccount<'info>,
 }
 
+impl<'info> Swap<'info> {
+    fn vault_seeds(&self, vault_bump: u8) -> [&[u8]; 3] {
+        let binding = self.pair.key();
+        [b"vault", binding.as_ref(), &[vault_bump]]
+    }
+}
+
 #[account]
 #[derive(Default)]
 pub struct Factory {
@@ -420,6 +475,10 @@ pub struct Pair {
     pub website: String,
     pub requests: Vec<RequestConfig>,
     pub pending_requests: Vec<Request>,
+    pub s0: u64,
+    pub pmin: u64,
+    pub pmax: u64,
+    pub smax: u64,
 }
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
@@ -517,14 +576,14 @@ pub enum RequestStatus {
     Refunded,
 }
 
-// #[event]
-// pub struct RequestSubmitted {
-//     pub pair_key: Pubkey,
-//     pub user: Pubkey,
-//     pub request_index: u8,
-//     pub ad_text: String,
-//     pub timestamp: i64,
-// }
+#[event]
+pub struct RequestSubmitted {
+    pub pair_key: Pubkey,
+    pub user: Pubkey,
+    pub request_index: u8,
+    pub ad_text: String,
+    pub timestamp: i64,
+}
 
 #[derive(Accounts)]
 pub struct AcceptRequest<'info> {
@@ -540,18 +599,39 @@ pub struct AcceptRequest<'info> {
     pub system_program: Program<'info, System>,
 }
 
-// #[event]
-// pub struct RequestAccepted {
-//     pub creator: Pubkey,
-//     pub request_index: u8,
-//     pub user: Pubkey,
-//     pub timestamp: i64,
-// }
+#[event]
+pub struct RequestAccepted {
+    pub creator: Pubkey,
+    pub request_index: u8,
+    pub user: Pubkey,
+    pub timestamp: i64,
+}
 
-fn calculate_output_amount(amount_in: u64, base_price: u64) -> Result<u64> {
-    require!(base_price > 0, FactoryError::InvalidBasePrice);
-    let amount_out = amount_in
-        .checked_div(base_price)
-        .ok_or(FactoryError::InvalidBasePrice)?;
-    Ok(amount_out)
+#[event]
+pub struct SwapExecuted {
+    pub is_buy: bool,
+    pub amount_in: u64,
+    pub amount_out: u64,
+    pub user: Pubkey,
+    pub pair_key: Pubkey,
+    pub attention_token_mint: Pubkey,
+}
+
+/// Approximates the "exactSolToTokens" logic using floating-point math.
+/// In practice, consider fixed-point arithmetic or careful rounding for precision.
+fn exact_sol_to_tokens(c: f64, s0: f64, pmin: f64, pmax: f64, smax: f64) -> u64 {
+    let a = (pmax - pmin) / (2.0 * smax);
+    let b = pmin + (pmax - pmin) * (s0 / smax);
+    let discriminant = b * b + 4.0 * a * c;
+    // Quadratic: A*(ΔS)^2 + B*(ΔS) - C = 0, solve for ΔS ≥ 0
+    let delta_s = (-b + discriminant.sqrt()) / (2.0 * a);
+    // Simple floor for a u64 result (you may also wish to handle negative or zero gracefully)
+    delta_s.floor() as u64
+}
+
+/// Approximates the "exactTokensToSol" logic using floating-point math.
+fn exact_tokens_to_sol(s0: f64, delta_s: f64, pmin: f64, pmax: f64, smax: f64) -> u64 {
+    let term1 = pmin * delta_s;
+    let term2 = ((pmax - pmin) / (2.0 * smax)) * (2.0 * s0 * delta_s - delta_s * delta_s);
+    (term1 + term2).floor() as u64
 }
