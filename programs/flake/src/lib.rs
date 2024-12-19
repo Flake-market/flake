@@ -54,7 +54,7 @@ pub mod flake {
         pair.s0 = 0; 
         pair.pmin = 40000;
         pair.pmax = 100000000;
-        pair.smax = 1000000000000000;
+        pair.smax = 10000000000000000;
         pair.creation_number = factory.pairs_count;
         pair.name = params.name;
         pair.ticker = params.ticker;
@@ -64,7 +64,6 @@ pub mod flake {
         pair.telegram = params.telegram;
         pair.website = params.website;
         pair.requests = params.requests;
-
         pair.vault = ctx.accounts.vault.key();
 
         // Increase pairs_count
@@ -100,7 +99,7 @@ pub mod flake {
         minimum_amount_out: u64,
         is_buy: bool,
     ) -> Result<()> {
-        let pair = &ctx.accounts.pair;
+        let pair = &mut ctx.accounts.pair;
         let user_key = ctx.accounts.user.key();
 
         // Example: compute "amount_out" using the new formulae
@@ -143,7 +142,12 @@ pub mod flake {
 
         // Prepare vault seeds
         let vault_bump = ctx.bumps.vault;
-        let seeds = &ctx.accounts.vault_seeds(vault_bump);
+        let binding = pair.key();
+        let seeds = &[
+            b"vault",
+            binding.as_ref(),
+            &[vault_bump],
+        ];
 
         if is_buy {
             // Transfer SOL from user to vault
@@ -185,7 +189,7 @@ pub mod flake {
                     token::MintTo {
                         mint: ctx.accounts.attention_token_mint.to_account_info(),
                         to: ctx.accounts.user_token_account.to_account_info(),
-                        authority: ctx.accounts.pair.to_account_info(),
+                        authority: pair.to_account_info(),
                     },
                     &[&[
                         b"pair",
@@ -438,13 +442,6 @@ pub struct Swap<'info> {
     pub vault: UncheckedAccount<'info>,
 }
 
-impl<'info> Swap<'info> {
-    fn vault_seeds(&self, vault_bump: u8) -> [&[u8]; 3] {
-        let binding = self.pair.key();
-        [b"vault", binding.as_ref(), &[vault_bump]]
-    }
-}
-
 #[account]
 #[derive(Default)]
 pub struct Factory {
@@ -620,18 +617,57 @@ pub struct SwapExecuted {
 /// Approximates the "exactSolToTokens" logic using floating-point math.
 /// In practice, consider fixed-point arithmetic or careful rounding for precision.
 fn exact_sol_to_tokens(c: f64, s0: f64, pmin: f64, pmax: f64, smax: f64) -> u64 {
-    let a = (pmax - pmin) / (2.0 * smax);
-    let b = pmin + (pmax - pmin) * (s0 / smax);
-    let discriminant = b * b + 4.0 * a * c;
+    // Convert lamports to SOL for calculations
+    let c_sol = c / 1e9;
+    let s0_sol = s0 / 1e9;
+    let pmin_sol = pmin / 1e9;
+    let pmax_sol = pmax / 1e9;
+    let smax_sol = smax / 1e9;
+
+    msg!("Converting {} lamports to SOL: {}", c, c_sol);
+    msg!("Current s0 (in SOL): {}", s0_sol);
+    msg!("Price range: {} SOL to {} SOL", pmin_sol, pmax_sol);
+
+    let a = (pmax_sol - pmin_sol) / (2.0 * smax_sol);
+    let b = pmin_sol + (pmax_sol - pmin_sol) * (s0_sol / smax_sol);
+    let discriminant = b * b + 4.0 * a * c_sol;
+
+    msg!("Quadratic coefficients - a: {}, b: {}", a, b);
+    msg!("Discriminant: {}", discriminant);
+
     // Quadratic: A*(ΔS)^2 + B*(ΔS) - C = 0, solve for ΔS ≥ 0
     let delta_s = (-b + discriminant.sqrt()) / (2.0 * a);
-    // Simple floor for a u64 result (you may also wish to handle negative or zero gracefully)
-    delta_s.floor() as u64
+    
+    // Convert result back to lamports
+    let result = (delta_s * 1e9).floor() as u64;
+    msg!("Calculated tokens out: {} lamports", result);
+    
+    result
 }
 
 /// Approximates the "exactTokensToSol" logic using floating-point math.
 fn exact_tokens_to_sol(s0: f64, delta_s: f64, pmin: f64, pmax: f64, smax: f64) -> u64 {
-    let term1 = pmin * delta_s;
-    let term2 = ((pmax - pmin) / (2.0 * smax)) * (2.0 * s0 * delta_s - delta_s * delta_s);
-    (term1 + term2).floor() as u64
+    // Convert lamports to SOL for calculations
+    let s0_sol = s0 / 1e9;
+    let delta_s_sol = delta_s / 1e9;
+    let pmin_sol = pmin / 1e9;
+    let pmax_sol = pmax / 1e9;
+    let smax_sol = smax / 1e9;
+
+    msg!("Current s0 (in SOL): {}", s0_sol);
+    msg!("Tokens in (in SOL units): {}", delta_s_sol);
+    msg!("Price range: {} SOL to {} SOL", pmin_sol, pmax_sol);
+
+    let term1 = pmin_sol * delta_s_sol;
+    let term2 = ((pmax_sol - pmin_sol) / (2.0 * smax_sol)) * 
+                (2.0 * s0_sol * delta_s_sol - delta_s_sol * delta_s_sol);
+
+    msg!("Term1: {} SOL", term1);
+    msg!("Term2: {} SOL", term2);
+
+    // Convert result back to lamports
+    let result = ((term1 + term2) * 1e9).floor() as u64;
+    msg!("Calculated SOL out: {} lamports", result);
+
+    result
 }

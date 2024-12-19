@@ -170,17 +170,34 @@ describe("factory", () => {
       mintKeypair.publicKey
     );
 
-    const swapAmount = new BN(2_000_000_000); // 5 SOL
+    const swapAmount = new BN(2_000_000_000); // 2 SOL
     const minAmountOut = new BN(1);
 
-    // Get pair data to find creator
+    // Get pair data to find creator and bonding curve parameters
     const pairData = await program.account.pair.fetch(pairAddress);
-    // console.log("Base price:", pairData.basePrice.toString());
-    // console.log("SOL amount to swap:", swapAmount.toString());
-    // console.log(
-    //   "Expected tokens:",
-    //   swapAmount.div(pairData.basePrice).toString()
-    // );
+    console.log("\nBonding Curve Parameters:");
+    console.log("s0 (current supply):", pairData.s0.toString());
+    console.log("pmin:", pairData.pmin.toString());
+    console.log("pmax:", pairData.pmax.toString());
+    console.log("smax:", pairData.smax.toString());
+
+    // Calculate expected tokens using the same formula as the program
+    const s0 = Number(pairData.s0);
+    const pmin = Number(pairData.pmin);
+    const pmax = Number(pairData.pmax);
+    const smax = Number(pairData.smax);
+    const c = Number(swapAmount);
+
+    // Quadratic formula components
+    const a = (pmax - pmin) / (2 * smax);
+    const b = pmin + ((pmax - pmin) * s0) / smax;
+    const discriminant = Math.sqrt(b * b + 4 * a * c);
+    const expectedTokens = Math.floor((-b + discriminant) / (2 * a));
+
+    console.log("user sol balance (before):", await program.provider.connection.getBalance(user.publicKey));
+    console.log("\nSwap Details:");
+    console.log("SOL amount to swap:", swapAmount.toString());
+    console.log("Expected tokens (calculated off-chain):", expectedTokens.toString());
 
     await program.methods
       .swap(swapAmount, minAmountOut, true)
@@ -199,10 +216,14 @@ describe("factory", () => {
       .signers([user])
       .rpc();
 
-    let tokenInfo = await program.provider.connection.getTokenAccountBalance(
-      userATA
-    );
-    //console.log("Actual tokens received:", tokenInfo.value.amount);
+    console.log("user sol balance (after):", await program.provider.connection.getBalance(user.publicKey));
+    let tokenInfo = await program.provider.connection.getTokenAccountBalance(userATA);
+    console.log("\nResults:");
+    console.log("Actual tokens received:", tokenInfo.value.amount);
+
+    // Verify new s0 after swap
+    const updatedPairData = await program.account.pair.fetch(pairAddress);
+    console.log("Updated s0:", updatedPairData.s0.toString());
   });
 
   it("Can submit a request for advertisement", async () => {
